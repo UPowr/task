@@ -285,15 +285,21 @@ func readPackageJson(projectRoot, file string) (*taskfile.Taskfile, error) {
 		relFile = file
 	}
 
+	cmd := "npm"
+	// if yark.lock exists, use yarn instead
+	if _, err := os.Stat(filepath.Join(filepath.Dir(file), "yarn.lock")); err == nil {
+		cmd = "yarn"
+	}
+
 	for name := range p.Scripts {
 		t.Tasks[name] = &taskfile.Task{
 			Desc: fmt.Sprintf("→ %s%s", relFile, findLineNumber(fd, name)),
 			Cmds: []*taskfile.Cmd{
 				{
-					Cmd: "yarn",
+					Cmd: cmd + " install",
 				},
 				{
-					Cmd: "yarn run " + name,
+					Cmd: cmd + " run " + name,
 				},
 			},
 		}
