@@ -4,6 +4,7 @@ require (
 	github.com/fatih/color v1.13.0
 	github.com/go-task/slim-sprig v0.0.0-20210107165309-348f09dbbbc0
 	github.com/joho/godotenv v1.4.0
+	github.com/l0nax/go-spew v1.2.1
 	github.com/mattn/go-zglob v0.0.4
 	github.com/mitchellh/hashstructure/v2 v2.0.2
 	github.com/radovskyb/watcher v1.0.7
@@ -18,9 +19,12 @@ require (
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/gookit/color v1.5.0 // indirect
 	github.com/mattn/go-colorable v0.1.9 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
+	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/xo/terminfo v0.0.0-20210125001918-ca9a967f8778 // indirect
 	golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f // indirect
 	golang.org/x/term v0.0.0-20210927222741-03fcf44c2211 // indirect
 	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect

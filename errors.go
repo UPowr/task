@@ -27,6 +27,10 @@ func (err *taskNotFoundError) Error() string {
 		)
 	}
 
+	if err.taskName == "default" {
+		return ""
+	}
+
 	return fmt.Sprintf(`task: Task %q does not exist`, err.taskName)
 }
 

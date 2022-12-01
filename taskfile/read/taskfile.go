@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -43,11 +42,11 @@ type ReaderNode struct {
 // Taskfile reads a Taskfile for a given directory
 // Uses current dir when dir is left empty. Uses Taskfile.yml
 // or Taskfile.yaml when entrypoint is left empty
-func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, error) {
+func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, string, error) {
 	if readerNode.Dir == "" {
 		d, err := os.Getwd()
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		readerNode.Dir = d
 	}
@@ -56,10 +55,10 @@ func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, error) {
 
 		path, found, err := searchForFile(filepathext.SmartJoin(readerNode.Dir, readerNode.Entrypoint), "Taskfile.yml")
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if !found {
-			return nil, fmt.Errorf(`task: No Taskfile found in "%s". Use "task --init" to create a new one`, readerNode.Dir)
+			return nil, "", fmt.Errorf(`task: No Taskfile found in "%s". Use "task --init" to create a new one`, readerNode.Dir)
 		}
 
 		// path, err := exists(filepathext.SmartJoin(readerNode.Dir, readerNode.Entrypoint))
@@ -74,7 +73,7 @@ func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, error) {
 	// absolute path to the project root as an environment variable
 	projectRoot, err := filepath.Abs(readerNode.Dir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get absolute path for directory %s: %s", readerNode.Dir, err)
+		return nil, "", fmt.Errorf("failed to get absolute path for directory %s: %s", readerNode.Dir, err)
 	}
 
 	// t.Vars.Set("PROJECT_ROOT", taskfile.Var{
@@ -86,18 +85,27 @@ func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, error) {
 	if strings.HasSuffix(path, "package.json") {
 		t, err = readPackageJson(projectRoot, path)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	} else {
 		t, err = readTaskfile(path)
 		if err != nil {
-			return nil, err
+			return nil, "", err
+		}
+	}
+
+	taskFileDir := filepath.Dir(path)
+
+	// set all tasks to run in the directory of the file, unless it is already set
+	for _, task := range t.Tasks {
+		if task.Dir == "" {
+			task.Dir = taskFileDir
 		}
 	}
 
 	v, err := t.ParsedVersion()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	// Annotate any included Taskfile reference with a base directory for resolving relative paths
@@ -153,7 +161,7 @@ func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, error) {
 			return err
 		}
 
-		includedTaskfile, err := Taskfile(includeReaderNode)
+		includedTaskfile, _, err := Taskfile(includeReaderNode)
 		if err != nil {
 			if includedTask.Optional {
 				return nil
@@ -203,7 +211,7 @@ func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	if v < 3.0 {
@@ -211,10 +219,10 @@ func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, error) {
 		if _, err = os.Stat(path); err == nil {
 			osTaskfile, err := readTaskfile(path)
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			if err = taskfile.Merge(t, osTaskfile, nil); err != nil {
-				return nil, err
+				return nil, "", err
 			}
 		}
 	}
@@ -227,7 +235,7 @@ func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, error) {
 		task.Task = name
 	}
 
-	return t, nil
+	return t, taskFileDir, nil
 }
 
 func readTaskfile(file string) (*taskfile.Taskfile, error) {
@@ -256,8 +264,6 @@ func readPackageJson(projectRoot, file string) (*taskfile.Taskfile, error) {
 		return nil, err
 	}
 
-	d := path.Dir(file)
-
 	var p packageJson
 
 	if err = json.Unmarshal(fd, &p); err != nil {
@@ -279,16 +285,15 @@ func readPackageJson(projectRoot, file string) (*taskfile.Taskfile, error) {
 		relFile = file
 	}
 
-	for name, cmd := range p.Scripts {
+	for name := range p.Scripts {
 		t.Tasks[name] = &taskfile.Task{
 			Desc: fmt.Sprintf("→ %s%s", relFile, findLineNumber(fd, name)),
-			Dir:  d,
 			Cmds: []*taskfile.Cmd{
 				{
 					Cmd: "yarn",
 				},
 				{
-					Cmd: "yarn " + cmd,
+					Cmd: "yarn run " + name,
 				},
 			},
 		}
