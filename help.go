@@ -1,6 +1,8 @@
 package task
 
 import (
+	_ "embed"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +14,32 @@ import (
 	"github.com/go-task/task/v3/internal/logger"
 )
 
+//go:embed logo.png
+var logo []byte
+
+func displaylogo() error {
+
+	// width, height := widthAndHeight()
+	width, height := "", ""
+
+	fmt.Print("\033]1337;")
+	fmt.Printf("File=inline=1")
+	if width != "" || height != "" {
+		if width != "" {
+			fmt.Printf(";width=%s", width)
+		}
+		if height != "" {
+			fmt.Printf(";height=%s", height)
+		}
+	}
+	// fmt.Print("preserveAspectRatio=1")
+	fmt.Print(":")
+	fmt.Printf("%s", base64.StdEncoding.EncodeToString(logo))
+	fmt.Print("\a\n")
+
+	return nil
+}
+
 // ListTasks prints a list of tasks.
 // Tasks that match the given filters will be excluded from the list.
 // The function returns a boolean indicating whether or not tasks were found.
@@ -20,7 +48,10 @@ func (e *Executor) ListTasks(filters ...FilterFunc) bool {
 	if len(tasks) == 0 {
 		return false
 	}
-	e.Logger.Outf(logger.Default, "task: Available tasks for this project:")
+
+	displaylogo()
+	e.Logger.Outf(logger.Default, "")
+	e.Logger.Outf(logger.Default, "Available tasks:")
 
 	// Format in tab-separated columns with a tab stop of 8.
 	w := tabwriter.NewWriter(e.Stdout, 0, 8, 6, ' ', 0)
