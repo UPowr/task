@@ -1,11 +1,17 @@
 package read
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -23,6 +29,7 @@ var (
 		"Taskfile.yaml",
 		"Taskfile.dist.yml",
 		"Taskfile.dist.yaml",
+		"package.json",
 	}
 )
 
@@ -45,15 +52,47 @@ func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, error) {
 		readerNode.Dir = d
 	}
 
-	path, err := exists(filepathext.SmartJoin(readerNode.Dir, readerNode.Entrypoint))
-	if err != nil {
-		return nil, err
-	}
-	readerNode.Entrypoint = filepath.Base(path)
+	if readerNode.Entrypoint == "" {
 
-	t, err := readTaskfile(path)
+		path, found, err := searchForFile(filepathext.SmartJoin(readerNode.Dir, readerNode.Entrypoint), "Taskfile.yml")
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf(`task: No Taskfile found in "%s". Use "task --init" to create a new one`, readerNode.Dir)
+		}
+
+		// path, err := exists(filepathext.SmartJoin(readerNode.Dir, readerNode.Entrypoint))
+		// if err != nil {
+		// 	return nil, err
+		// }
+		readerNode.Dir = filepath.Dir(path)
+		readerNode.Entrypoint = filepath.Base(path)
+	}
+	path := filepathext.SmartJoin(readerNode.Dir, readerNode.Entrypoint)
+
+	// absolute path to the project root as an environment variable
+	projectRoot, err := filepath.Abs(readerNode.Dir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get absolute path for directory %s: %s", readerNode.Dir, err)
+	}
+
+	// t.Vars.Set("PROJECT_ROOT", taskfile.Var{
+	// 	Static: absdir,
+	// })
+
+	var t *taskfile.Taskfile
+
+	if strings.HasSuffix(path, "package.json") {
+		t, err = readPackageJson(projectRoot, path)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		t, err = readTaskfile(path)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	v, err := t.ParsedVersion()
@@ -65,7 +104,9 @@ func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, error) {
 	_ = t.Includes.Range(func(key string, includedFile taskfile.IncludedTaskfile) error {
 		// Set the base directory for resolving relative paths, but only if not already set
 		if includedFile.BaseDir == "" {
+
 			includedFile.BaseDir = readerNode.Dir
+
 			t.Includes.Set(key, includedFile)
 		}
 		return nil
@@ -93,7 +134,6 @@ func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, error) {
 		if err != nil {
 			return err
 		}
-
 		path, err = exists(path)
 		if err != nil {
 			if includedTask.Optional {
@@ -167,7 +207,7 @@ func Taskfile(readerNode *ReaderNode) (*taskfile.Taskfile, error) {
 	}
 
 	if v < 3.0 {
-		path = filepathext.SmartJoin(readerNode.Dir, fmt.Sprintf("Taskfile_%s.yml", runtime.GOOS))
+		path := filepathext.SmartJoin(readerNode.Dir, fmt.Sprintf("Taskfile_%s.yml", runtime.GOOS))
 		if _, err = os.Stat(path); err == nil {
 			osTaskfile, err := readTaskfile(path)
 			if err != nil {
@@ -200,6 +240,82 @@ func readTaskfile(file string) (*taskfile.Taskfile, error) {
 		return nil, fmt.Errorf("task: Failed to parse %s:\n%w", filepathext.TryAbsToRel(file), err)
 	}
 	return &t, nil
+}
+
+type packageJson struct {
+	Scripts map[string]string `json:"scripts"`
+}
+
+func readPackageJson(projectRoot, file string) (*taskfile.Taskfile, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return nil, err
+	}
+	fd, err := ioutil.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	d := path.Dir(file)
+
+	var p packageJson
+
+	if err = json.Unmarshal(fd, &p); err != nil {
+		return nil, err
+	}
+
+	t := taskfile.Taskfile{
+		Version: "3",
+		Tasks:   taskfile.Tasks{},
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+
+	relFile, err := filepath.Rel(wd, file)
+	if err != nil {
+		relFile = file
+	}
+
+	for name, cmd := range p.Scripts {
+		t.Tasks[name] = &taskfile.Task{
+			Desc: fmt.Sprintf("→ %s%s", relFile, findLineNumber(fd, name)),
+			Dir:  d,
+			Cmds: []*taskfile.Cmd{
+				{
+					Cmd: "yarn",
+				},
+				{
+					Cmd: "yarn " + cmd,
+				},
+			},
+		}
+	}
+
+	return &t, nil
+}
+
+func findLineNumber(f []byte, scriptName string) string {
+	// Splits on newlines by default.
+	scanner := bufio.NewScanner(bytes.NewReader(f))
+
+	line := 1
+	// https://golang.org/pkg/bufio/#Scanner.Scan
+	for scanner.Scan() {
+		if strings.Contains(scanner.Text(), `"`+scriptName+`":`) {
+			return fmt.Sprintf(":%d", line)
+		}
+
+		line++
+	}
+
+	if err := scanner.Err(); err != nil {
+		panic(err) // Probably shouldn't be possible?
+	}
+
+	return ""
 }
 
 func exists(path string) (string, error) {
