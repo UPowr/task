@@ -106,3 +106,9 @@ tasks:
     cmds:
       - echo '{{.GO_PACKAGES}}'
     silent: true
+
+  upowr:build:
+    cmds:
+      - go install ./cmd/task
+      - GOOS=linux GOARCH=amd64 go install ./cmd/task
+      - test "$(uname)" != "Darwin" || cp ${GOBIN:-${GOPATH:-${HOME}/go}/bin}/linux_amd64/task ${GOBIN:-${GOPATH:-${HOME}/go}/bin}/linux_amd64/task.linux.amd64
