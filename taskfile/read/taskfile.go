@@ -247,6 +247,9 @@ func readTaskfile(file string) (*taskfile.Taskfile, error) {
 	if err := yaml.NewDecoder(f).Decode(&t); err != nil {
 		return nil, fmt.Errorf("task: Failed to parse %s:\n%w", filepathext.TryAbsToRel(file), err)
 	}
+	for _, task := range t.Tasks {
+		task.Taskfile = file
+	}
 	return &t, nil
 }
 
@@ -293,7 +296,8 @@ func readPackageJson(projectRoot, file string) (*taskfile.Taskfile, error) {
 
 	for name := range p.Scripts {
 		t.Tasks[name] = &taskfile.Task{
-			Desc: fmt.Sprintf("→ %s%s", relFile, findLineNumber(fd, name)),
+			Taskfile: file,
+			Desc:     fmt.Sprintf("→ %s%s", relFile, findLineNumber(fd, name)),
 			Cmds: []*taskfile.Cmd{
 				{
 					Cmd: cmd + " install",

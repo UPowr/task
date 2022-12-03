@@ -29,6 +29,7 @@ type Task struct {
 	IncludeVars          *Vars
 	IncludedTaskfileVars *Vars
 	IncludedTaskfile     *IncludedTaskfile
+	Taskfile             string
 }
 
 func (t *Task) Name() string {
@@ -127,6 +128,7 @@ func (t *Task) DeepCopy() *Task {
 		IncludeVars:          t.IncludeVars.DeepCopy(),
 		IncludedTaskfileVars: t.IncludedTaskfileVars.DeepCopy(),
 		IncludedTaskfile:     t.IncludedTaskfile.DeepCopy(),
+		Taskfile:             t.Taskfile,
 	}
 	return c
 }

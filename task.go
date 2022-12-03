@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -389,6 +389,7 @@ func (e *Executor) GetTaskList(filters ...FilterFunc) []*taskfile.Task {
 			task = compiledTask
 		}
 		tasks = append(tasks, task)
+
 	}
 
 	// Filter the tasks
@@ -396,19 +397,21 @@ func (e *Executor) GetTaskList(filters ...FilterFunc) []*taskfile.Task {
 		tasks = filter(tasks)
 	}
 
+	sortKey := func(t *taskfile.Task) (key string) {
+		if t.Taskfile == path.Join(e.Dir, "Taskfile.yml") {
+			key += "0"
+		} else {
+			key += "1"
+		}
+
+		return key + ":" + t.Task
+	}
+
 	// Sort the tasks
-	// Tasks that are not namespaced should be listed before tasks that are.
-	// We detect this by searching for a ':' in the task name.
+	// Tasks in the root taskfile go first
+	// Then everything else
 	sort.Slice(tasks, func(i, j int) bool {
-		iContainsColon := strings.Contains(tasks[i].Task, ":")
-		jContainsColon := strings.Contains(tasks[j].Task, ":")
-		if iContainsColon == jContainsColon {
-			return tasks[i].Task < tasks[j].Task
-		}
-		if !iContainsColon && jContainsColon {
-			return true
-		}
-		return false
+		return sortKey(tasks[i]) < sortKey(tasks[j])
 	})
 
 	return tasks
