@@ -300,7 +300,7 @@ func readPackageJson(projectRoot, file string) (*taskfile.Taskfile, error) {
 			Desc:     fmt.Sprintf("→ %s%s", relFile, findLineNumber(fd, name)),
 			Cmds: []*taskfile.Cmd{
 				{
-					Cmd: cmd + " install",
+					Cmd: cmd + " install --silent --frozen-lockfile",
 				},
 				{
 					Cmd: cmd + " run " + name,
