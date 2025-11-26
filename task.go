@@ -9,6 +9,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-task/task/v3/internal/compiler"
 	"github.com/go-task/task/v3/internal/execext"
@@ -233,6 +234,8 @@ func (e *Executor) runCommand(ctx context.Context, t *taskfile.Task, call taskfi
 	cmd := t.Cmds[i]
 
 	switch {
+	case len(cmd.Parallel) > 0:
+		return e.runParallelCommands(ctx, t, call, cmd)
 	case cmd.Task != "":
 		reacquire := e.releaseConcurrencyLimit()
 		defer reacquire()
@@ -282,6 +285,227 @@ func (e *Executor) runCommand(ctx context.Context, t *taskfile.Task, call taskfi
 		return err
 	default:
 		return nil
+	}
+}
+
+type cmdOutput struct {
+	index  int
+	stdout []byte
+	stderr []byte
+	err    error
+}
+
+func (e *Executor) runParallelCommands(ctx context.Context, t *taskfile.Task, call taskfile.Call, parentCmd *taskfile.Cmd) error {
+	g, ctx := errgroup.WithContext(ctx)
+
+	totalCmds := len(parentCmd.Parallel)
+	completed := &atomic.Int32{}
+	startTime := time.Now()
+
+	// Save original stderr for progress display
+	originalStderr := e.Stderr
+
+	// Channel to capture outputs from each command
+	outputsChan := make(chan cmdOutput, totalCmds)
+
+	// Mutex to protect executor state during parallel task execution
+	var executorMutex sync.Mutex
+
+	// Start spinner in a separate goroutine using original stderr
+	done := make(chan bool)
+	go e.showParallelProgressWithWriter(totalCmds, completed, done, startTime, originalStderr)
+
+	// Execute each command in parallel
+	for idx, parallelCmd := range parentCmd.Parallel {
+		idx := idx
+		parallelCmd := parallelCmd
+
+		g.Go(func() error {
+			var stdoutBuf, stderrBuf []byte
+			var err error
+
+			switch {
+			case parallelCmd.Task != "":
+				// Run task call - capture output by replacing stdout/stderr
+				stdoutWriter := &bufferWriter{buf: &stdoutBuf}
+				stderrWriter := &bufferWriter{buf: &stderrBuf}
+
+				// Lock while modifying shared executor state
+				executorMutex.Lock()
+				oldStdout := e.Stdout
+				oldStderr := e.Stderr
+				oldSilent := e.Silent
+
+				e.Stdout = stdoutWriter
+				e.Stderr = stderrWriter
+				e.Silent = true // Suppress task logging messages
+				executorMutex.Unlock()
+
+				err = e.RunTask(ctx, taskfile.Call{Task: parallelCmd.Task, Vars: parallelCmd.Vars})
+
+				// Lock while restoring shared executor state
+				executorMutex.Lock()
+				e.Stdout = oldStdout
+				e.Stderr = oldStderr
+				e.Silent = oldSilent
+				executorMutex.Unlock()
+			case parallelCmd.Cmd != "":
+				// Run shell command - capture output
+				stdoutBuf, stderrBuf, err = e.runCommandWithCapture(ctx, t, call, parallelCmd)
+			}
+
+			completed.Add(1)
+
+			outputsChan <- cmdOutput{
+				index:  idx,
+				stdout: stdoutBuf,
+				stderr: stderrBuf,
+				err:    err,
+			}
+
+			return err
+		})
+	}
+
+	// Wait for all commands to complete
+	err := g.Wait()
+
+	// Stop the spinner and clear the progress line immediately
+	done <- true
+	fmt.Fprintf(originalStderr, "\r\033[K") // Clear the line
+
+	close(outputsChan)
+
+	elapsed := time.Since(startTime)
+
+	// Collect all outputs
+	outputs := make([]cmdOutput, totalCmds)
+	for output := range outputsChan {
+		outputs[output.index] = output
+	}
+
+	// Print results
+	e.printParallelResults(t, parentCmd, outputs, err, elapsed)
+
+	return err
+}
+
+func (e *Executor) runCommandWithCapture(ctx context.Context, t *taskfile.Task, call taskfile.Call, cmd *taskfile.Cmd) ([]byte, []byte, error) {
+	var stdoutBuf, stderrBuf []byte
+	stdoutWriter := &bufferWriter{buf: &stdoutBuf}
+	stderrWriter := &bufferWriter{buf: &stderrBuf}
+
+	err := execext.RunCommand(ctx, &execext.RunCommandOptions{
+		Command: cmd.Cmd,
+		Dir:     t.Dir,
+		Env:     getEnviron(t),
+		Stdin:   e.Stdin,
+		Stdout:  stdoutWriter,
+		Stderr:  stderrWriter,
+	})
+
+	if execext.IsExitError(err) && cmd.IgnoreError {
+		return stdoutBuf, stderrBuf, nil
+	}
+
+	return stdoutBuf, stderrBuf, err
+}
+
+type bufferWriter struct {
+	buf *[]byte
+	mu  sync.Mutex
+}
+
+func (w *bufferWriter) Write(p []byte) (n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	*w.buf = append(*w.buf, p...)
+	return len(p), nil
+}
+
+func (e *Executor) showParallelProgress(total int, completed *atomic.Int32, done chan bool, startTime time.Time) {
+	e.showParallelProgressWithWriter(total, completed, done, startTime, e.Stderr)
+}
+
+func (e *Executor) showParallelProgressWithWriter(total int, completed *atomic.Int32, done chan bool, startTime time.Time, writer io.Writer) {
+	spinners := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	spinnerIdx := 0
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			c := int(completed.Load())
+			elapsed := time.Since(startTime)
+			spinner := spinners[spinnerIdx%len(spinners)]
+			spinnerIdx++
+
+			// Clear line and print progress
+			fmt.Fprintf(writer, "\r\033[K%s Running parallel commands: %d/%d (%.1fs)",
+				spinner, c, total, elapsed.Seconds())
+		}
+	}
+}
+
+func (e *Executor) printParallelResults(t *taskfile.Task, parentCmd *taskfile.Cmd, outputs []cmdOutput, err error, elapsed time.Duration) {
+	if err != nil {
+		// Find which command failed and count completed
+		completedCount := 0
+		for i, output := range outputs {
+			if output.err == nil {
+				completedCount++
+			} else {
+				cmd := parentCmd.Parallel[i]
+				cmdDesc := cmd.Cmd
+				if cmdDesc == "" && cmd.Task != "" {
+					cmdDesc = "task: " + cmd.Task
+				}
+
+				e.Logger.Errf(logger.Red, "Parallel commands failed: %d/%d completed (%.1fs)",
+					completedCount, len(outputs), elapsed.Seconds())
+				e.Logger.Errf(logger.Red, "Failed command: %s", cmdDesc)
+
+				// Print output without labels
+				if len(output.stdout) > 0 {
+					fmt.Fprintf(e.Stdout, "\n%s", string(output.stdout))
+				}
+				if len(output.stderr) > 0 {
+					fmt.Fprintf(e.Stderr, "%s", string(output.stderr))
+				}
+				break
+			}
+		}
+	} else {
+		// All succeeded
+		e.Logger.Errf(logger.Green, "Parallel commands completed: %d/%d (%.1fs)",
+			len(outputs), len(outputs), elapsed.Seconds())
+
+		// Print outputs from successful commands only if log: true
+		if parentCmd.Log {
+			for i, output := range outputs {
+				if len(output.stdout) > 0 || len(output.stderr) > 0 {
+					cmd := parentCmd.Parallel[i]
+					cmdDesc := cmd.Cmd
+					if cmdDesc == "" && cmd.Task != "" {
+						cmdDesc = "task: " + cmd.Task
+					}
+
+					if !cmd.Silent && !t.Silent && !e.Silent {
+						e.Logger.Errf(logger.Default, "\n[%s]", cmdDesc)
+						if len(output.stdout) > 0 {
+							fmt.Fprintf(e.Stdout, "%s", string(output.stdout))
+						}
+						if len(output.stderr) > 0 {
+							fmt.Fprintf(e.Stderr, "%s", string(output.stderr))
+						}
+					}
+				}
+			}
+		}
 	}
 }
 

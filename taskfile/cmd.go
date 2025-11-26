@@ -8,6 +8,8 @@ type Cmd struct {
 	Vars        *Vars
 	IgnoreError bool
 	Defer       bool
+	Parallel    []*Cmd // Commands to run in parallel
+	Log         bool   // Log output from successful parallel commands
 }
 
 // Dep is a task dependency
@@ -18,11 +20,25 @@ type Dep struct {
 
 // UnmarshalYAML implements yaml.Unmarshaler interface
 func (c *Cmd) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Try simple string command first
 	var cmd string
 	if err := unmarshal(&cmd); err == nil {
 		c.Cmd = cmd
 		return nil
 	}
+
+	// Try parallel structure before other structs
+	var parallelStruct struct {
+		Parallel []*Cmd
+		Log      bool
+	}
+	if err := unmarshal(&parallelStruct); err == nil && len(parallelStruct.Parallel) > 0 {
+		c.Parallel = parallelStruct.Parallel
+		c.Log = parallelStruct.Log
+		return nil
+	}
+
+	// Try command with options
 	var cmdStruct struct {
 		Cmd         string
 		Silent      bool
@@ -34,6 +50,8 @@ func (c *Cmd) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		c.IgnoreError = cmdStruct.IgnoreError
 		return nil
 	}
+
+	// Try deferred command
 	var deferredCmd struct {
 		Defer string
 	}
@@ -42,6 +60,8 @@ func (c *Cmd) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		c.Cmd = deferredCmd.Defer
 		return nil
 	}
+
+	// Try deferred task call
 	var deferredCall struct {
 		Defer Call
 	}
@@ -51,6 +71,8 @@ func (c *Cmd) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		c.Vars = deferredCall.Defer.Vars
 		return nil
 	}
+
+	// Default: task call
 	var taskCall struct {
 		Task string
 		Vars *Vars

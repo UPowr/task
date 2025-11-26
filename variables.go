@@ -100,14 +100,33 @@ func (e *Executor) compiledTask(call taskfile.Call, evaluateShVars bool) (*taskf
 			if cmd == nil {
 				continue
 			}
-			new.Cmds = append(new.Cmds, &taskfile.Cmd{
+			newCmd := &taskfile.Cmd{
 				Task:        r.Replace(cmd.Task),
 				Silent:      cmd.Silent,
 				Cmd:         r.Replace(cmd.Cmd),
 				Vars:        r.ReplaceVars(cmd.Vars),
 				IgnoreError: cmd.IgnoreError,
 				Defer:       cmd.Defer,
-			})
+				Log:         cmd.Log,
+			}
+			// Recursively compile parallel commands
+			if len(cmd.Parallel) > 0 {
+				newCmd.Parallel = make([]*taskfile.Cmd, 0, len(cmd.Parallel))
+				for _, parallelCmd := range cmd.Parallel {
+					if parallelCmd == nil {
+						continue
+					}
+					newCmd.Parallel = append(newCmd.Parallel, &taskfile.Cmd{
+						Task:        r.Replace(parallelCmd.Task),
+						Silent:      parallelCmd.Silent,
+						Cmd:         r.Replace(parallelCmd.Cmd),
+						Vars:        r.ReplaceVars(parallelCmd.Vars),
+						IgnoreError: parallelCmd.IgnoreError,
+						Defer:       parallelCmd.Defer,
+					})
+				}
+			}
+			new.Cmds = append(new.Cmds, newCmd)
 		}
 	}
 	if len(origTask.Deps) > 0 {
